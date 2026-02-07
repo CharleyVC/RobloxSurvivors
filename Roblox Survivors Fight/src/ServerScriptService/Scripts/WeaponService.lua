@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 -- Modules
 local profileManager = require(ServerScriptService.Scripts:WaitForChild("ProfileManager"))
@@ -27,8 +28,7 @@ local npcRemoteEvents = remoteEvents:WaitForChild("NPCRemoteEvents")
 local weaponAttackEvent = remoteEvents:WaitForChild("WeaponAttack")
 local weaponSelectedEvent = remoteEvents:WaitForChild("WeaponSelected")
 local equipEvent = remoteEvents:WaitForChild("EquipEvent")
-
-local weaponHitEvent = remoteEvents:WaitForChild("WeaponHit")
+local RateLimiter = require(ServerScriptService.Scripts:WaitForChild("RateLimiter"))
 
 
 local LastAttackTimes = {} 
@@ -166,89 +166,46 @@ function WeaponService.attachClientLogic(weapon, player)
 end
 
 ------------------------------------------------------------
--- CLIENT → SERVER: hit confirmation for client-driven projectiles
+-- Server-authoritative hit resolution (projectiles)
 ------------------------------------------------------------
 
-weaponHitEvent.OnServerEvent:Connect(function(player, hitData)
---	print("[WeaponService] Hit received:", hitData.baseAction, hitData.weapon)
-
-	if Workspace:GetAttribute("IsPaused") == true then
-		return
+local function findEnemyFromHit(hitResult: RaycastResult?): Model?
+	if not hitResult or not hitResult.Instance then
+		return nil
 	end
-
-	if typeof(hitData) ~= "table" then
-		return
+	local model = hitResult.Instance:FindFirstAncestorOfClass("Model")
+	if not model then
+		return nil
 	end
-
-	local weapon = hitData.weapon
-	local baseAction = hitData.baseAction
-	local hitPosition = hitData.hitPosition
-	local enemyModel = hitData.enemy
-
-	if not weapon or not baseAction then
-		return
+	if not model:IsDescendantOf(Workspace:WaitForChild("Enemies")) then
+		return nil
 	end
+	return model
+end
 
+local function buildHitContext(character: Model, weapon: string, baseAction: string, hitModel: Model?, hitPosition: Vector3)
 	local props = weaponProperties[weapon]
-	if not props then
-		return
+	if not props or not props[baseAction] then
+		return nil
 	end
 
-	-- Make sure the player is actually holding this weapon
-	local character = player.Character
-	local equippedToolName
-	if character then
-		local tool = character:FindFirstChildWhichIsA("Tool")
-		if tool then
-			equippedToolName = tool.Name
-		end
-	end
-
-	if equippedToolName ~= weapon then
-		-- Client claims hit with a weapon they don't have equipped.
-		return
-	end
-
-	-- Optional basic anti-cheat: range check
-	local hrp = character and character:FindFirstChild("HumanoidRootPart")
-	if hrp and hitPosition then
-		local maxRange = props[baseAction].Range or 0
-		if maxRange > 0 then
-			local dist = (hitPosition - hrp.Position).Magnitude
-			if dist > maxRange * 2 then
-				-- Hit is too far away to be plausible
-				return
-			end
-		end
-	end
-	
-	local baseType 	 = props[baseAction].Type
-	local radius     = props[baseAction].Radius or 0
-	local damage     = props[baseAction].Damage or 0
-	local knockBack  = props[baseAction].Knockback or 0
+	local baseType = props[baseAction].Type
+	local radius = props[baseAction].Radius or 0
+	local damage = props[baseAction].Damage or 0
+	local knockBack = props[baseAction].Knockback or 0
 	local tags = props[baseAction].Tags
 
-	local character = player.Character
-	if not character or not character.Parent then return end
-
-
-	-- Build the ActionContext
 	local context = ActionContext.new({
 		Actor = character,
-		Action = baseAction,      -- "Primary" / "Secondary"
+		Action = baseAction,
 		BaseType = baseType,
 		Source = weapon,
-
 		Tags = tags,
-
-		-- Default to the weapon's base damage
 		Damage = damage,
 		Radius = radius,
 		Knockback = knockBack,
 	})
-	
 
-	-- Optional AoE
 	if props[baseAction].AoE then
 		context.AoE = {
 			Duration = props[baseAction].AoE.Duration,
@@ -256,7 +213,6 @@ weaponHitEvent.OnServerEvent:Connect(function(player, hitData)
 		}
 	end
 
-	-- Optional Burn
 	if props[baseAction].Burn then
 		context.Burn = {
 			Mode = props[baseAction].Burn.Mode,
@@ -268,20 +224,102 @@ weaponHitEvent.OnServerEvent:Connect(function(player, hitData)
 		}
 	end
 
-	context.HitTarget = hitData.enemy
-	context.HitPosition = hitData.hitPosition
+	context.HitTarget = hitModel
+	context.HitPosition = hitPosition
 
-	if not context.HitPosition and context.HitTarget then
-		local hrp = context.HitTarget:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			context.HitPosition = hrp.Position
+	return context
+end
+
+local function buildProjectileParams(character: Model): RaycastParams
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+
+	local filterList = { character }
+	local playersFolder = Workspace:FindFirstChild("Players")
+	if playersFolder then
+		table.insert(filterList, playersFolder)
+	end
+	params.FilterDescendantsInstances = filterList
+	return params
+end
+
+local function simulateProjectileImpact(
+	character: Model,
+	weapon: string,
+	baseAction: string,
+	origin: Vector3,
+	targetPosition: Vector3,
+	aim: Vector3,
+	maxRange: number
+)
+	local props = weaponProperties[weapon]
+	if not props or not props[baseAction] then
+		return
+	end
+
+	local gravity = Workspace.Gravity
+	local direction = targetPosition - origin
+	if direction.Magnitude < 1 then
+		direction = aim.Unit * math.max(1, maxRange * 0.1)
+		targetPosition = origin + direction
+	end
+
+	local velocityScalar = props[baseAction].Velocity or 0.05
+	local duration = math.log(1.001 + direction.Magnitude * velocityScalar)
+	duration = math.max(duration, 0.05)
+	local maxLifetime = duration + 0.1
+
+	local initialVelocity =
+		(direction / duration)
+		+ Vector3.new(0, gravity * duration * 0.5, 0)
+
+	local params = buildProjectileParams(character)
+	local t = 0
+	local lastPos = origin
+	local hitType = "Air"
+	local hitModel: Model? = nil
+	local hitPos = origin + aim.Unit * maxRange
+	local hitNormal = Vector3.yAxis
+
+	while t < maxLifetime do
+		local dt = RunService.Heartbeat:Wait()
+		t += dt
+
+		local nextPos =
+			origin
+			+ initialVelocity * t
+			+ Vector3.new(0, -0.5 * gravity * t * t, 0)
+
+		local rayResult = Workspace:Raycast(lastPos, nextPos - lastPos, params)
+		if rayResult then
+			local enemy = findEnemyFromHit(rayResult)
+			hitPos = rayResult.Position
+			hitNormal = rayResult.Normal
+			if enemy then
+				hitType = "Enemy"
+				hitModel = enemy
+			else
+				hitType = "Ground"
+			end
+			break
+		end
+
+		lastPos = nextPos
+	end
+
+	if hitType == "Enemy" and hitModel then
+		local context = buildHitContext(character, weapon, baseAction, hitModel, hitPos)
+		if context then
+			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
+		end
+	elseif hitType == "Ground" then
+		local context = buildHitContext(character, weapon, baseAction, nil, hitPos)
+		if context then
+			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
 		end
 	end
-	
-	-- Dispatch OnHit: DamageOnHit + SmallExplosion (and future boons)
-	ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
-
-end)
+end
 
 ------------------------------------------------------------
 -- SERVER: receive fire attempts and forward projectile data to client
@@ -292,6 +330,7 @@ function WeaponService.ArcProjectile(player, attackTable, weapon, baseAction)
 
 	local serverPosition = attackTable.serverPosition
 	local rayInstance = attackTable.rayInstance
+	local aimDir = attackTable.aimDir
 
 	if not rayInstance or not rayInstance:IsDescendantOf(Workspace) then
 		return
@@ -339,6 +378,7 @@ function WeaponService.ArcProjectile(player, attackTable, weapon, baseAction)
 
 	-- Clamp the target position to range
 	local originPosition = hrp.Position
+	local aim = (typeof(aimDir) == "Vector3" and aimDir.Magnitude > 0.1) and aimDir.Unit or hrp.CFrame.LookVector
 	local distance = (serverPosition - originPosition).Magnitude
 	local targetPosition = serverPosition
 
@@ -346,6 +386,10 @@ function WeaponService.ArcProjectile(player, attackTable, weapon, baseAction)
 		local dir = (serverPosition - originPosition).Unit
 		targetPosition = originPosition + dir * range
 	end
+
+	task.spawn(function()
+		simulateProjectileImpact(character, weapon, baseAction, originPosition, targetPosition, aim, range)
+	end)
 
 	-- Package everything the client needs to simulate the projectile
 	local projectileData = {
@@ -383,6 +427,10 @@ weaponAttackEvent.OnServerEvent:Connect(function(player, attackTable, weapon, ba
 
 	local props = weaponProperties[weapon]
 	if not props then
+		return
+	end
+
+	if not RateLimiter.Allow(player, "WeaponAttack", 0.05) then
 		return
 	end
 
