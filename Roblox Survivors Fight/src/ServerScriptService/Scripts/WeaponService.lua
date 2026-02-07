@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 -- Modules
 local profileManager = require(ServerScriptService.Scripts:WaitForChild("ProfileManager"))
@@ -259,6 +260,8 @@ local function resolveProjectileHit(origin: Vector3, direction: Vector3, range: 
 		if result then
 			return result
 		end
+
+		lastPos = nextPos
 	end
 
 	return nil

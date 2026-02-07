@@ -40,10 +40,6 @@ vfxEvent.OnClientEvent:Connect(function(effectName, ...)
 		local cf = GroundResolver.buildAlignedCFrame(pos, posNormal)
 		cf = cf * CFrame.new(0, 0, 0) -- lift
 		VFXModule.play("SpawnVFX", cf)
-		
-		
-		
-		
 	elseif effectName == "RingVFX" then
 		
 		local ground, radius, duration, color= ...
