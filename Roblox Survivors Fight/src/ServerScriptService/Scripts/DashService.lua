@@ -5,6 +5,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
 ---------------------------------------------------------------------
 -- Combat framework
@@ -25,15 +26,21 @@ local DashProperties = AbilityProperties.Dash
 ---------------------------------------------------------------------
 local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local DashRequest   = RemoteEvents:WaitForChild("DashRequest")
-local DashHit		= RemoteEvents:WaitForChild("DashHit")	       -- Client → Server
 local DashImpulse   = RemoteEvents:WaitForChild("DashImpulse")
 local DashLifecycle = RemoteEvents:WaitForChild("DashLifecycle")
+local vfxEvent = RemoteEvents:WaitForChild("VFXEvent")
+local RateLimiter = require(game.ServerScriptService.Scripts:WaitForChild("RateLimiter"))
 
 ---------------------------------------------------------------------
 -- State
 ---------------------------------------------------------------------
 local Active: {[any]: ActionContext} = {}
 local Cooldowns: {[Player]: number} = {}
+local DashState: {[Player]: {lastPos: Vector3, hitCache: {[Model]: boolean}}} = {}
+local enemiesFolder = Workspace:WaitForChild("Enemies")
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Include
+overlapParams.FilterDescendantsInstances = { enemiesFolder }
 
 ---------------------------------------------------------------------
 -- Helpers
@@ -55,6 +62,7 @@ local function startDash(player: Player, direction: Vector3)
 
 	if Active[player] then return end
 	if typeof(direction) ~= "Vector3" then return end
+	if not RateLimiter.Allow(player, "DashStart", 0.1) then return end
 
 	local character = player.Character
 	if not character then return end
@@ -119,6 +127,7 @@ local function startDash(player: Player, direction: Vector3)
 	end
 
 	Active[player] = context
+	DashState[player] = { lastPos = hrp.Position, hitCache = {} }
 
 	-----------------------------------------------------------------
 	-- Authoritative impulse (movement stays here)
@@ -149,6 +158,7 @@ local function startDash(player: Player, direction: Vector3)
 		if Active[player] ~= context then return end
 
 		Active[player] = nil
+		DashState[player] = nil
 		Cooldowns[player] = now()
 		context.Phase = ActionPhases.OnExpire
 		ActionModifierService.DispatchPhase(
@@ -161,29 +171,60 @@ local function startDash(player: Player, direction: Vector3)
 	end)
 end
 
-DashHit.OnServerEvent:Connect(function(player, enemy)
-	
-	local context = Active[player]
-	if not context then return end
-	if not enemy or not enemy:IsDescendantOf(workspace.Enemies) then return end
+local function checkDashHits(player: Player, context: ActionContext, hrp: BasePart, sweepRadius: number)
+	local state = DashState[player]
+	if not state then return end
 
-	context.HitTarget = enemy
-	context.Phase = ActionPhases.OnTravel
-	ActionModifierService.DispatchPhase(
-		context.Actor,
-		ActionPhases.OnTravel,
-		context
-	)
-end)
+	local lastPos = state.lastPos
+	local currentPos = hrp.Position
+	local midPos = (lastPos + currentPos) * 0.5
+
+	local positions = { lastPos, midPos, currentPos }
+	for _, pos in ipairs(positions) do
+		local parts = Workspace:GetPartBoundsInRadius(pos, sweepRadius, overlapParams)
+		for _, part in ipairs(parts) do
+			local model = part:FindFirstAncestorOfClass("Model")
+			if model and model:IsDescendantOf(enemiesFolder) and not state.hitCache[model] then
+				state.hitCache[model] = true
+				context.HitTarget = model
+				context.Phase = ActionPhases.OnTravel
+				ActionModifierService.DispatchPhase(
+					context.Actor,
+					ActionPhases.OnTravel,
+					context
+				)
+				vfxEvent:FireAllClients("HitNPC", model)
+			end
+		end
+	end
+
+	state.lastPos = currentPos
+end
 
 ---------------------------------------------------------------------
 -- ENTRYPOINT (mirrors WeaponService exactly)
 ---------------------------------------------------------------------
 DashRequest.OnServerEvent:Connect(startDash)
 
+RunService.Heartbeat:Connect(function()
+	for player, context in pairs(Active) do
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			DashState[player] = nil
+			Active[player] = nil
+		else
+			local radius = (context.SweepRadius and context.SweepRadius > 0) and context.SweepRadius or 4
+			checkDashHits(player, context, hrp, radius)
+		end
+	end
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	Active[player] = nil
 	Cooldowns[player] = nil
+	DashState[player] = nil
+	RateLimiter.Clear(player)
 end)
 
 return {}
