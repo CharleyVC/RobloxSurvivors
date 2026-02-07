@@ -28,7 +28,6 @@ local npcRemoteEvents = remoteEvents:WaitForChild("NPCRemoteEvents")
 local weaponAttackEvent = remoteEvents:WaitForChild("WeaponAttack")
 local weaponSelectedEvent = remoteEvents:WaitForChild("WeaponSelected")
 local equipEvent = remoteEvents:WaitForChild("EquipEvent")
-local vfxEvent = remoteEvents:WaitForChild("VFXEvent")
 local RateLimiter = require(ServerScriptService.Scripts:WaitForChild("RateLimiter"))
 
 
@@ -314,13 +313,10 @@ local function simulateProjectileImpact(
 		if context then
 			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
 		end
-	else
-		vfxEvent:FireAllClients("ProjectileImpact", hitPos, hitNormal, weapon, baseAction, hitType)
-		if hitType == "Ground" and baseAction == "Secondary" then
-			local context = buildHitContext(character, weapon, baseAction, nil, hitPos)
-			if context then
-				ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
-			end
+	elseif hitType == "Ground" then
+		local context = buildHitContext(character, weapon, baseAction, nil, hitPos)
+		if context then
+			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
 		end
 	end
 end
