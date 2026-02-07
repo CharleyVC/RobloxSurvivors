@@ -18,7 +18,6 @@ local SFXModule = require(ReplicatedStorage:WaitForChild("SFXModule"))
 local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local WeaponAttack = RemoteEvents:WaitForChild("WeaponAttack")
 local EquipEvent = RemoteEvents:WaitForChild("EquipEvent")
-local WeaponHit = RemoteEvents:WaitForChild("WeaponHit")
 local WeaponPropertiesRemote = RemoteEvents:WaitForChild("WeaponProperties")
 
 local WeaponClient = {}
@@ -302,6 +301,7 @@ function WeaponClient.DoLoopFire(baseAction, weaponName)
 	t.serverPosition = pos
 	t.rayInstance = inst
 	t.direction = aim or autoDir
+	t.aimDir = (aim or autoDir)
 	--print("[WeaponClient] Firing weapon:", weaponName, baseAction)
 	WeaponAttack:FireServer(t, weaponName, baseAction)
 end
@@ -331,6 +331,7 @@ function WeaponClient.FireSingle(baseAction, aimVector)
 	t.serverPosition = pos
 	t.rayInstance = inst
 	t.direction = aimVector or autoDir
+	t.aimDir = (aimVector or autoDir)
 
 	WeaponClient.LastAttackTimes[baseAction] = now
 	WeaponAttack:FireServer(t, tool.Name, baseAction)
@@ -500,15 +501,7 @@ local function SpawnProjectile(data)
 	groundParams.FilterDescendantsInstances = {
 		workspace:WaitForChild("Map"),	}
 
-	local function impact(position, enemy)
-		WeaponHit:FireServer({
-			weapon      = weaponName,
-			baseAction  = baseAction,
-			hitPosition = position,
-			enemy       = enemy,
-			hitNormal = (originPos - targetPos).Unit,
-			hitVelocity = projectile.AssemblyLinearVelocity,
-		})
+	local function impact(position)
 		SFXModule.Impact(position, WeaponClient.EquippedWeapon)
 		projectile:Destroy()
 	end
@@ -586,7 +579,7 @@ local function SpawnProjectile(data)
 
 			if enemy then
 				dbg("HIT enemy:", enemy.Name, "at pos:", pos)
-				impact(pos, enemy)
+				impact(pos)
 				return
 			end
 
@@ -610,7 +603,7 @@ local function SpawnProjectile(data)
 
 
 					if enemy then
-						impact(pos, enemy)
+						impact(pos)
 						return
 					end
 				end

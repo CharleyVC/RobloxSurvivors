@@ -40,6 +40,20 @@ vfxEvent.OnClientEvent:Connect(function(effectName, ...)
 		local cf = GroundResolver.buildAlignedCFrame(pos, posNormal)
 		cf = cf * CFrame.new(0, 0, 0) -- lift
 		VFXModule.play("SpawnVFX", cf)
+	elseif effectName == "ProjectileImpact" then
+		local hitPos, hitNormal, weaponName, baseAction, hitType = ...
+		if typeof(hitPos) ~= "Vector3" then
+			return
+		end
+
+		if hitType == "Ground" then
+			local ground = GroundResolver.resolve(hitPos)
+			local cf = GroundResolver.buildAlignedCFrame(ground.Position, ground.Normal)
+			VFXModule.play("SpawnVFX", cf)
+		elseif hitType == "Air" then
+			local cf = CFrame.new(hitPos)
+			VFXModule.play("SpawnVFX", cf)
+		end
 		
 		
 		
