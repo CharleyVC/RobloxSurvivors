@@ -33,7 +33,6 @@ local CapsuleHitDetection = require(ReplicatedStorage.Controllers:WaitForChild("
 local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
 local DashRequest   = RemoteEvents:WaitForChild("DashRequest")     -- Client → Server
-local DashHit		= RemoteEvents:WaitForChild("DashHit")	       -- Client → Server
 local DashImpulse   = RemoteEvents:WaitForChild("DashImpulse")     -- Server → Client
 local DashLifecycle = RemoteEvents:WaitForChild("DashLifecycle")   -- Server → Client
 
@@ -184,7 +183,6 @@ RunService.Heartbeat:Connect(function(dt)
 		)
 		if enemy and not dashHitCache[enemy] then
 			dashHitCache[enemy] = true
-			RemoteEvents.DashHit:FireServer(enemy)
 		end
 		lastDashPos = currentPos
 	end
