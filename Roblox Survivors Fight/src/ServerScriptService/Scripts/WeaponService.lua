@@ -183,7 +183,7 @@ local function findEnemyFromHit(hitResult: RaycastResult?): Model?
 	return model
 end
 
-local function buildHitContext(character: Model, weapon: string, baseAction: string, hitModel: Model?, hitPosition: Vector3)
+local function buildHitContext(character: Model, weapon: string, baseAction: string, hitModel: Model, hitPosition: Vector3)
 	local props = weaponProperties[weapon]
 	if not props or not props[baseAction] then
 		return nil
@@ -230,95 +230,41 @@ local function buildHitContext(character: Model, weapon: string, baseAction: str
 	return context
 end
 
-local function buildProjectileParams(character: Model): RaycastParams
+local function resolveProjectileHit(origin: Vector3, direction: Vector3, range: number): RaycastResult?
+	if direction.Magnitude <= 0 then
+		return nil
+	end
+
 	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.IgnoreWater = true
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { Workspace:WaitForChild("Enemies") }
 
-	local filterList = { character }
-	local playersFolder = Workspace:FindFirstChild("Players")
-	if playersFolder then
-		table.insert(filterList, playersFolder)
+	local look = direction.Unit
+	local right = look:Cross(Vector3.yAxis)
+	if right.Magnitude <= 0.001 then
+		right = Vector3.xAxis
 	end
-	params.FilterDescendantsInstances = filterList
-	return params
-end
+	right = right.Unit
+	local up = right:Cross(look).Unit
 
-local function simulateProjectileImpact(
-	character: Model,
-	weapon: string,
-	baseAction: string,
-	origin: Vector3,
-	targetPosition: Vector3,
-	aim: Vector3,
-	maxRange: number
-)
-	local props = weaponProperties[weapon]
-	if not props or not props[baseAction] then
-		return
-	end
+	local offsets = {
+		Vector3.zero,
+		right * 2,
+		-right * 2,
+		up * 2,
+		-up * 2,
+	}
 
-	local gravity = Workspace.Gravity
-	local direction = targetPosition - origin
-	if direction.Magnitude < 1 then
-		direction = aim.Unit * math.max(1, maxRange * 0.1)
-		targetPosition = origin + direction
-	end
-
-	local velocityScalar = props[baseAction].Velocity or 0.05
-	local duration = math.log(1.001 + direction.Magnitude * velocityScalar)
-	duration = math.max(duration, 0.05)
-	local maxLifetime = duration + 0.1
-
-	local initialVelocity =
-		(direction / duration)
-		+ Vector3.new(0, gravity * duration * 0.5, 0)
-
-	local params = buildProjectileParams(character)
-	local t = 0
-	local lastPos = origin
-	local hitType = "Air"
-	local hitModel: Model? = nil
-	local hitPos = origin + aim.Unit * maxRange
-	local hitNormal = Vector3.yAxis
-
-	while t < maxLifetime do
-		local dt = RunService.Heartbeat:Wait()
-		t += dt
-
-		local nextPos =
-			origin
-			+ initialVelocity * t
-			+ Vector3.new(0, -0.5 * gravity * t * t, 0)
-
-		local rayResult = Workspace:Raycast(lastPos, nextPos - lastPos, params)
-		if rayResult then
-			local enemy = findEnemyFromHit(rayResult)
-			hitPos = rayResult.Position
-			hitNormal = rayResult.Normal
-			if enemy then
-				hitType = "Enemy"
-				hitModel = enemy
-			else
-				hitType = "Ground"
-			end
-			break
+	for _, offset in ipairs(offsets) do
+		local result = Workspace:Raycast(origin + offset, look * range, params)
+		if result then
+			return result
 		end
 
 		lastPos = nextPos
 	end
 
-	if hitType == "Enemy" and hitModel then
-		local context = buildHitContext(character, weapon, baseAction, hitModel, hitPos)
-		if context then
-			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
-		end
-	elseif hitType == "Ground" then
-		local context = buildHitContext(character, weapon, baseAction, nil, hitPos)
-		if context then
-			ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
-		end
-	end
+	return nil
 end
 
 ------------------------------------------------------------
@@ -387,9 +333,16 @@ function WeaponService.ArcProjectile(player, attackTable, weapon, baseAction)
 		targetPosition = originPosition + dir * range
 	end
 
-	task.spawn(function()
-		simulateProjectileImpact(character, weapon, baseAction, originPosition, targetPosition, aim, range)
-	end)
+	local hitResult = resolveProjectileHit(originPosition, aim, range)
+	if hitResult then
+		local hitModel = findEnemyFromHit(hitResult)
+		if hitModel then
+			local context = buildHitContext(character, weapon, baseAction, hitModel, hitResult.Position)
+			if context then
+				ActionModifierService.DispatchPhase(character, ActionPhases.OnHit, context)
+			end
+		end
+	end
 
 	-- Package everything the client needs to simulate the projectile
 	local projectileData = {
